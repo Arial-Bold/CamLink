@@ -105,7 +105,20 @@ static void show_main(int chan, const Info *in, const char *speed_line) {
         printf("  Answered:    %u commands\n", (unsigned)in->commands);
         printf("\n  Link speed:  %s\n", speed_line);
     }
-    printf("\n\n  A: speed test   X: camera details   START: restart\n");
+    printf("\n\n  A: speed test   X (or Y, Z): camera details\n  START (or hold L+R): restart\n");
+}
+
+/* What each controller port says is pressed (to check a controller). */
+static void show_buttons(int chan) {
+    static const char *names[] = { "Left", "Right", "Down", "Up", "Z", "R", "L", "", "A", "B", "X", "Y", "Start" };
+    printf("\x1b[25;0H");
+    for (int c = 0; c < 4; c++) {
+        if (c == chan) continue;
+        u16 held = PAD_ButtonsHeld(c);
+        printf("  Port %d buttons: %04x ", c + 1, held);
+        for (int b = 0; b < 13; b++) if ((held & (1 << b)) && names[b][0]) printf("%s ", names[b]);
+        printf("          \n");
+    }
 }
 
 /* About 3 seconds of 64-byte replies: how much gets through, and intact. */
@@ -208,9 +221,12 @@ int main(void) {
         for (int c = 0; c < 4; c++) if (c != chan) d |= PAD_ButtonsDown(c);
         /* (exit() can leave the screen frozen with nothing to return to;
          * a restart always gets back to the launcher or the GameCube menu) */
-        if (d & PAD_BUTTON_START) SYS_ResetSystem(SYS_HOTRESET, 0, FALSE);
+        u32 held = 0;
+        for (int c = 0; c < 4; c++) if (c != chan) held |= PAD_ButtonsHeld(c);
+        if (frame % 6 == 0) show_buttons(chan);
+        if ((d & PAD_BUTTON_START) || ((held & PAD_TRIGGER_L) && (held & PAD_TRIGGER_R))) SYS_ResetSystem(SYS_HOTRESET, 0, FALSE);
         if ((d & PAD_BUTTON_A) && chan >= 0) { speed_test(chan, speed_line, sizeof(speed_line)); frame = 0; }
-        if ((d & PAD_BUTTON_X) && chan >= 0) {
+        if ((d & (PAD_BUTTON_X | PAD_BUTTON_Y | PAD_TRIGGER_Z)) && chan >= 0) {
             clear();
             printf("\n  Reading the camera details...\n");
             show_details(chan, &info);
