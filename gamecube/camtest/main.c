@@ -5,7 +5,7 @@
  * its USB ids, its video stream and microphone. A runs a speed test of the
  * controller-port link (how fast pictures could travel), X shows the
  * camera's USB description as hex (to send back for the next step).
- * Use a normal controller in another port. START: exit. */
+ * Use a normal controller in another port. START restarts the GameCube. */
 #include <gccore.h>
 #include <ogc/si.h>
 #include <ogc/lwp_watchdog.h>
@@ -105,7 +105,7 @@ static void show_main(int chan, const Info *in, const char *speed_line) {
         printf("  Answered:    %u commands\n", (unsigned)in->commands);
         printf("\n  Link speed:  %s\n", speed_line);
     }
-    printf("\n\n  A: speed test   X: camera details   START: exit\n");
+    printf("\n\n  A: speed test   X: camera details   START: restart\n");
 }
 
 /* About 3 seconds of 64-byte replies: how much gets through, and intact. */
@@ -206,7 +206,9 @@ int main(void) {
         PAD_ScanPads();
         u32 d = 0;
         for (int c = 0; c < 4; c++) if (c != chan) d |= PAD_ButtonsDown(c);
-        if (d & PAD_BUTTON_START) exit(0);
+        /* (exit() can leave the screen frozen with nothing to return to;
+         * a restart always gets back to the launcher or the GameCube menu) */
+        if (d & PAD_BUTTON_START) SYS_ResetSystem(SYS_HOTRESET, 0, FALSE);
         if ((d & PAD_BUTTON_A) && chan >= 0) { speed_test(chan, speed_line, sizeof(speed_line)); frame = 0; }
         if ((d & PAD_BUTTON_X) && chan >= 0) {
             clear();
