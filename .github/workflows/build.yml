@@ -1,0 +1,37 @@
+name: Build
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  gamecube:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build camtest.dol
+        run: docker run --rm -v "$PWD:/src" -w /src/gamecube/camtest ghcr.io/extremscorner/libogc2:latest make
+      - uses: actions/upload-artifact@v6
+        with:
+          name: camtest
+          path: gamecube/camtest/camtest.dol
+
+  adapter:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Get the ARM compiler and the Pico SDK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi cmake
+          git clone --depth 1 -b 2.1.1 https://github.com/raspberrypi/pico-sdk.git
+          cd pico-sdk && git submodule update --init --depth 1 lib/tinyusb
+      - name: Build camlink.uf2
+        run: |
+          mkdir -p adapter/build && cd adapter/build
+          cmake -DPICO_SDK_PATH=$GITHUB_WORKSPACE/pico-sdk -DPICO_BOARD=waveshare_rp2040_zero ..
+          make -j4
+      - uses: actions/upload-artifact@v6
+        with:
+          name: camlink
+          path: adapter/build/camlink.uf2
