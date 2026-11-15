@@ -1,0 +1,48 @@
+# CamLink
+
+Video calls on a Nintendo GameCube (work in progress), with a USB webcam plugged into a
+USB-to-GameCube controller adapter (an RP2040-Zero board running our own
+firmware instead of its controller firmware).
+
+## Step 1: does the webcam talk to the adapter?
+
+- `adapter/` - **CamLink**, the adapter firmware. It checks the webcam on the
+  adapter's USB port, shows the result on the board's colour LED, and answers
+  the GameCube on the controller port's data wire.
+- `gamecube/camtest/` - **camtest**, a GameCube program that finds the adapter
+  in any controller port, shows what the webcam reported, and tests how fast
+  the controller-port link is.
+- `shared/link.h` - the commands the two sides use.
+
+### Putting CamLink on the adapter
+
+1. Unplug the adapter from the GameCube. Connect the board's USB-C port to a
+   computer.
+2. Hold **BOOT**, tap **RESET**, release BOOT: a drive called **RPI-RP2**
+   appears.
+3. Drag `camlink.uf2` onto it. The drive disappears when it's done.
+
+Never connect the adapter to a computer and a GameCube at the same time.
+
+To use it as a controller adapter again, flash the GameCube (RP2040-Zero)
+firmware from the [Joypad OS releases](https://github.com/joypad-ai/joypad-os/releases)
+the same way.
+
+### The LED
+
+| Light | Meaning |
+|---|---|
+| Steady green, short blue flash every 2 s | The camera, its video stream and microphone |
+| Steady green | The camera and its video stream |
+| Blinking green | The camera, but no video stream |
+| Yellow double blink | A different USB device |
+| Slow white blink | No USB device (or no power on the USB port) |
+
+## Building
+
+GitHub builds both on every push (Actions tab): `camtest.dol` and
+`camlink.uf2`.
+
+## License
+
+MIT (see LICENSE). The adapter firmware uses joybus-pio, LGPL 3.0.
