@@ -9,12 +9,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Build camtest.dol
-        run: docker run --rm -v "$PWD:/src" -w /src/gamecube/camtest ghcr.io/extremscorner/libogc2:latest make
+      - name: Build camtest.dol and camview.dol
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src/gamecube/camtest ghcr.io/extremscorner/libogc2:latest make
+          docker run --rm -v "$PWD:/src" -w /src/gamecube/camview ghcr.io/extremscorner/libogc2:latest make
       - uses: actions/upload-artifact@v6
         with:
-          name: camtest
-          path: gamecube/camtest/camtest.dol
+          name: gamecube
+          path: |
+            gamecube/camtest/camtest.dol
+            gamecube/camview/camview.dol
 
   adapter:
     runs-on: ubuntu-latest
