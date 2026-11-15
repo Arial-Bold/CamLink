@@ -24,7 +24,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi cmake
-          git clone --depth 1 -b 2.1.1 https://github.com/raspberrypi/pico-sdk.git
+          git clone --depth 1 -b 2.2.0 https://github.com/raspberrypi/pico-sdk.git
           cd pico-sdk && git submodule update --init --depth 1 lib/tinyusb
       - name: Build camlink.uf2
         run: |
