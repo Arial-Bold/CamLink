@@ -7,6 +7,8 @@
  * link's speed, and the adapter's own counts (for diagnosis).
  *
  * Use a wired controller in another port. A: start / stop the camera.
+ * X and Y start just part of it (tests 1 and 2), B stops it; the third line
+ * of numbers shows how far starting got and whether the adapter restarted.
  * START (or hold L+R): stop the camera and restart the GameCube. */
 #include <gccore.h>
 #include <ogc/si.h>
@@ -54,11 +56,17 @@ static u32 le32(const u8 *p) { return (u32)p[0] | ((u32)p[1] << 8) | ((u32)p[2] 
 typedef struct {
     u8 version, state, fail_step;
     u32 packets, frames, dropped;
+    u32 uptime_ms;
+    u8 progress, level;
+    u16 unplugs;
+    u32 reset_reason;
 } Info;
 
 static bool read_info(int chan, Info *info) {
     u8 cmd = LINK_CMD_HELLO, b[LINK_INFO_LEN];
-    if (!link_xfer_retry(chan, &cmd, 1, b, LINK_INFO_LEN)) return false;
+    memset(b, 0, sizeof(b));
+    /* (older adapter firmware answers with 32 bytes) */
+    if (!link_xfer_retry(chan, &cmd, 1, b, LINK_INFO_LEN) && !link_xfer_retry(chan, &cmd, 1, b, 32)) return false;
     if (b[0] != LINK_MAGIC0 || b[1] != LINK_MAGIC1 || b[2] != LINK_MAGIC2 || b[3] != LINK_MAGIC3) return false;
     info->version = b[4];
     info->state = b[5];
@@ -66,6 +74,11 @@ static bool read_info(int chan, Info *info) {
     info->packets = le32(b + 20);
     info->frames = le32(b + 24);
     info->dropped = le32(b + 28);
+    info->uptime_ms = le32(b + 32);
+    info->progress = b[36];
+    info->level = b[37];
+    info->unplugs = le16(b + 38);
+    info->reset_reason = le32(b + 40);
     return true;
 }
 
@@ -253,11 +266,14 @@ int main(void) {
     SI_DisablePolling(SI_CHAN_BIT(chan));
     clear_screen();
 
-    bool want_on = true;
+    /* The camera starts only when asked (A), and the test levels X and Y
+     * start just part of it, to find out which part goes wrong. */
+    bool want_on = false;
+    int level_asked = 0;
     u8 cmd[3];
-    cmd[0] = LINK_CMD_START;
     u8 r[LINK_FRAME_LEN];
-    link_xfer_retry(chan, cmd, 1, r, 1);
+    u32 restarts = 0, last_uptime = 0, max_progress = 0;
+    char diag_line[96] = "";
 
     u16 last_id = 0;
     u32 shown = 0, bytes = 0, bad = 0, lost = 0;
@@ -275,11 +291,26 @@ int main(void) {
             link_xfer_retry(chan, cmd, 1, r, 1);
             SYS_ResetSystem(SYS_HOTRESET, 0, FALSE);
         }
-        if (d & PAD_BUTTON_A) {
-            want_on = !want_on;
-            cmd[0] = want_on ? LINK_CMD_START : LINK_CMD_STOP;
+        int ask = 0;
+        if (d & PAD_BUTTON_A) ask = want_on ? -1 : 3;
+        if (d & PAD_BUTTON_X) ask = 1;
+        if (d & PAD_BUTTON_Y) ask = 2;
+        if (d & PAD_BUTTON_B) ask = -1;
+        if (ask) {
+            /* (stop first, so a new level always starts afresh) */
+            cmd[0] = LINK_CMD_STOP;
             link_xfer_retry(chan, cmd, 1, r, 1);
-            if (!want_on) clear_screen();
+            want_on = false;
+            level_asked = 0;
+            max_progress = 0;
+            if (ask > 0) {
+                cmd[0] = LINK_CMD_START_LEVEL;
+                cmd[1] = (u8)ask;
+                link_xfer_retry(chan, cmd, 2, r, 1);
+                level_asked = ask;
+                want_on = ask == 3;
+            }
+            clear_screen();
         }
 
         /* the adapter's counts, twice a second */
@@ -291,11 +322,14 @@ int main(void) {
             } else if (info.version < LINK_VERSION) {
                 snprintf(stat_line, sizeof(stat_line), "adapter has firmware v%d: put the new camlink.uf2 on it", info.version);
             } else {
-                /* (a start that got lost, or a camera plugged in later: ask again) */
-                if (want_on && info.state == LINK_CAMERA_OK) {
-                    cmd[0] = LINK_CMD_START;
-                    link_xfer_retry(chan, cmd, 1, r, 1);
-                }
+                /* the adapter restarting shows as its clock going back */
+                if (last_uptime && info.uptime_ms + 200 < last_uptime) restarts++;
+                last_uptime = info.uptime_ms;
+                if (info.progress > max_progress) max_progress = info.progress;
+                snprintf(diag_line, sizeof(diag_line), "up %u.%us  test %d  step %u (best %u)  restarts %u  unplug %u  r%x",
+                         (unsigned)(info.uptime_ms / 1000), (unsigned)(info.uptime_ms / 100 % 10), level_asked,
+                         (unsigned)info.progress, (unsigned)max_progress, (unsigned)restarts, (unsigned)info.unplugs,
+                         (unsigned)info.reset_reason);
                 snprintf(stat_line, sizeof(stat_line), "v%d  %s  packets %u  frames %u  dropped %u", info.version,
                          state_text(info.state),
                          (unsigned)info.packets, (unsigned)info.frames, (unsigned)info.dropped);
@@ -355,8 +389,12 @@ int main(void) {
             window = t;
         }
         if (got || !want_on || (t & 0x3f) == 0) {
-            printf("\x1b[1;0H  %-74s\n  %-74s\n", fps_line, stat_line);
-            if (!want_on) printf("\n  Camera off. A: start it again   START: restart\n");
+            printf("\x1b[1;0H  %-74s\n  %-74s\n  %-74s\n", fps_line, stat_line, diag_line);
+            if (!want_on) {
+                printf("\n  A: start the camera    B: stop\n");
+                printf("  X: test 1 (settings only)   Y: test 2 (+ big packets)\n");
+                printf("  START: restart\n");
+            }
         }
         if (!got) VIDEO_WaitVSync();
     }
