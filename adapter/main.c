@@ -1,20 +1,28 @@
 /* CamLink - the adapter firmware for CamLink (video calls on the GameCube).
  *
  * Runs on the USB-to-GameCube adapter (an RP2040-Zero). Core 0 looks after
- * the USB side: it checks the webcam plugged into the adapter, and shows the
- * result on the board's colour LED (as camcheck did). Core 1 talks to the
- * GameCube on the controller port's data wire (GP7): it answers like a
- * standard controller, and also answers the test program's own commands
- * (link.h): who it is, what the camera reported, and a speed test.
+ * the USB side: it finds the webcam plugged into the adapter and, when the
+ * GameCube asks, starts its video and gathers the pictures (cam.c). Core 1
+ * talks to the GameCube on the controller port's data wire (GP7): it answers
+ * like a standard controller, and also answers CamLink's own commands
+ * (link.h): who it is, what the camera reported, a speed test, and the
+ * pictures themselves.
  *
- * LED:  slow white blink = no USB device; steady green = the QuickCam with
- *       its video stream (a blue flash too if its microphone is there);
- *       blinking green = the QuickCam, no video stream; yellow double
- *       blink = some other USB device.
+ * The board's LED:
+ *   slow white blink        no USB device
+ *   green, steady           the QuickCam, ready (a blue flash too if its
+ *                           microphone is there)
+ *   green, blinking         the QuickCam, but no video stream found
+ *   yellow, double blink    some other USB device
+ *   cyan, blinking          starting the camera
+ *   cyan, steady            pictures coming
+ *   red, blinking           the camera didn't take its settings
  *
  * To go back to the adapter's controller firmware, flash the usb2gc
  * RP2040-Zero .uf2 from github.com/joypad-ai/joypad-os/releases.
- * The Joybus code is joybus-pio (LGPL-3.0, see joybus-pio/LICENSE). */
+ *
+ * License: GPL-3.0-or-later (the camera settings come from Linux, see
+ * cam.c). The Joybus code is joybus-pio (LGPL-3.0, joybus-pio/LICENSE). */
 #include <string.h>
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
@@ -23,18 +31,24 @@
 #include "ws2812.pio.h"
 #include "joybus.h"
 #include "link.h"
+#include "cam.h"
 
 #define LED_PIN 16
 #define GC_DATA_PIN 7
-#define CAM_VID 0x046d
-#define CAM_PID 0x08dd
+#define IDLE_STOP_US 5000000      /* stop the camera after 5 s with no frame asked for */
 
 /* What the USB side found (written by core 0, read by core 1). */
 static volatile uint8_t state = LINK_WAITING;
+static volatile uint8_t fail_step;
 static volatile uint16_t dev_vid, dev_pid, max_iso, desc_len;
 static volatile uint8_t has_mic;
 static uint8_t desc_buf[512];
-static volatile uint32_t cmd_count, speed_count;
+static volatile uint32_t cmd_count;
+static volatile uint8_t cam_daddr;
+
+/* Asked by the GameCube (core 1), done by core 0. */
+static volatile bool want_start, want_stop;
+static volatile uint32_t last_frame_ask;
 
 /* ------------------------------------------------------------ the LED */
 
@@ -56,6 +70,15 @@ static void show_state(uint32_t ms) {
         break;
     case LINK_CAMERA_NO_STREAM:
         if ((t / 250) % 2 == 0) led(0, 255, 0); else led(0, 0, 0);
+        break;
+    case LINK_STARTING:
+        if ((t / 125) % 2 == 0) led(0, 200, 255); else led(0, 0, 0);
+        break;
+    case LINK_STREAMING:
+        led(0, 200, 255);
+        break;
+    case LINK_START_FAILED:
+        if ((t / 250) % 2 == 0) led(255, 0, 0); else led(0, 0, 0);
         break;
     default:
         if (t < 150 || (t >= 300 && t < 450)) led(255, 180, 0); else led(0, 0, 0);
@@ -103,8 +126,12 @@ static void got_config(tuh_xfer_t *xfer) {
     desc_len = total;
     max_iso = biggest;
     has_mic = mic;
-    if (dev_vid == CAM_VID && dev_pid == CAM_PID) state = video ? LINK_CAMERA_OK : LINK_CAMERA_NO_STREAM;
-    else state = LINK_OTHER_DEVICE;
+    if (dev_vid == CAM_VID && dev_pid == CAM_PID) {
+        state = video ? LINK_CAMERA_OK : LINK_CAMERA_NO_STREAM;
+        if (video) { cam_attach(xfer->daddr); cam_daddr = xfer->daddr; }
+    } else {
+        state = LINK_OTHER_DEVICE;
+    }
 }
 
 static void got_device(tuh_xfer_t *xfer) {
@@ -121,7 +148,7 @@ void tuh_mount_cb(uint8_t daddr) {
 }
 
 void tuh_umount_cb(uint8_t daddr) {
-    (void)daddr;
+    if (daddr == cam_daddr) { cam_detach(); cam_daddr = 0; }
     state = LINK_WAITING;
     has_mic = 0;
     max_iso = 0;
@@ -148,6 +175,10 @@ static void __not_in_flash_func(reply)(uint8_t *data, uint len) {
     cmd_count++;
 }
 
+static void __not_in_flash_func(put32)(uint8_t *b, uint32_t v) {
+    b[0] = (uint8_t)v; b[1] = (uint8_t)(v >> 8); b[2] = (uint8_t)(v >> 16); b[3] = (uint8_t)(v >> 24);
+}
+
 static void __not_in_flash_func(make_info)(uint8_t *b) {
     memset(b, 0, LINK_INFO_LEN);
     b[0] = LINK_MAGIC0; b[1] = LINK_MAGIC1; b[2] = LINK_MAGIC2; b[3] = LINK_MAGIC3;
@@ -157,15 +188,19 @@ static void __not_in_flash_func(make_info)(uint8_t *b) {
     b[8] = dev_pid & 255; b[9] = dev_pid >> 8;
     b[10] = max_iso & 255; b[11] = max_iso >> 8;
     b[12] = has_mic;
+    b[13] = fail_step;
     b[14] = desc_len & 255; b[15] = desc_len >> 8;
-    uint32_t c = cmd_count, s = speed_count;
-    memcpy(b + 16, &c, 4);
-    memcpy(b + 20, &s, 4);
+    put32(b + 16, cmd_count);
+    put32(b + 20, cam_packets());
+    put32(b + 24, cam_frames());
+    put32(b + 28, cam_dropped());
 }
+
+static CamFrame sending;   /* the frame the GameCube is reading */
 
 static void __not_in_flash_func(gc_main)(void) {
     joybus_port_init(&gc, GC_DATA_PIN, pio1, -1, -1);
-    static uint8_t out[LINK_SPEED_LEN];
+    static uint8_t out[LINK_CHUNK_LEN];
     for (;;) {
         uint8_t cmd[3];
         joybus_receive_bytes(&gc, cmd, 1, GC_TIMEOUT_US, false);
@@ -207,10 +242,41 @@ static void __not_in_flash_func(gc_main)(void) {
             uint8_t s = cmd[1], sum = 0;
             for (int i = 0; i < LINK_SPEED_LEN - 1; i++) { out[i] = (uint8_t)(s + i); sum += out[i]; }
             out[LINK_SPEED_LEN - 1] = sum;
-            speed_count++;
             reply(out, LINK_SPEED_LEN);
             break;
         }
+        case LINK_CMD_FRAME:
+            last_frame_ask = time_us_32();
+            sending = cam_take_frame();
+            memset(out, 0, LINK_FRAME_LEN);
+            out[0] = sending.id & 255; out[1] = sending.id >> 8;
+            put32(out + 2, sending.len);
+            out[6] = sending.w & 255; out[7] = sending.w >> 8;
+            out[8] = sending.h & 255; out[9] = sending.h >> 8;
+            out[10] = cam_quality();
+            out[11] = state;
+            reply(out, LINK_FRAME_LEN);
+            break;
+        case LINK_CMD_CHUNK: {
+            if (joybus_receive_bytes(&gc, cmd + 1, 2, GC_TIMEOUT_US, true) != 2) break;
+            uint32_t off = ((uint32_t)cmd[1] << 8 | cmd[2]) * LINK_CHUNK_LEN;
+            memset(out, 0, LINK_CHUNK_LEN);
+            if (sending.data && off < sending.len)
+                memcpy(out, sending.data + off, sending.len - off < LINK_CHUNK_LEN ? sending.len - off : LINK_CHUNK_LEN);
+            reply(out, LINK_CHUNK_LEN);
+            break;
+        }
+        case LINK_CMD_START:
+            last_frame_ask = time_us_32();
+            want_start = true;
+            out[0] = state;
+            reply(out, 1);
+            break;
+        case LINK_CMD_STOP:
+            want_stop = true;
+            out[0] = state;
+            reply(out, 1);
+            break;
         default:
             busy_wait_us(GC_RESET_WAIT_US);
             joybus_port_reset(&gc);
@@ -218,6 +284,8 @@ static void __not_in_flash_func(gc_main)(void) {
         }
     }
 }
+
+/* ------------------------------------------------------------ main (core 0) */
 
 int main(void) {
     uint offset = pio_add_program(led_pio, &ws2812_program);
@@ -231,5 +299,29 @@ int main(void) {
         tuh_task();
         uint32_t now = to_ms_since_boot(get_absolute_time());
         if (now - last >= 20) { last = now; show_state(now); }
+
+        /* the GameCube's requests */
+        if (want_stop) {
+            want_stop = false;
+            want_start = false;
+            cam_stop();
+            if (cam_daddr) state = LINK_CAMERA_OK;
+        }
+        if (want_start) {
+            want_start = false;
+            if (cam_daddr && !cam_streaming()) {
+                state = LINK_STARTING;
+                show_state(now);
+                uint8_t step = 0;
+                if (cam_start(&step)) state = LINK_STREAMING;
+                else { fail_step = step; state = cam_daddr ? LINK_START_FAILED : LINK_WAITING; }
+            }
+        }
+        /* nobody watching: switch the camera (and its light) off */
+        if (cam_streaming() && time_us_32() - last_frame_ask > IDLE_STOP_US) {
+            cam_stop();
+            if (cam_daddr) state = LINK_CAMERA_OK;
+        }
+        cam_tick();
     }
 }
