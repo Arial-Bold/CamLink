@@ -101,6 +101,7 @@ static void show_main(int chan, const Info *in, const char *speed_line) {
         printf("  Video:       %s", in->max_iso ? "" : "-\n");
         if (in->max_iso) printf("packets up to %u bytes\n", in->max_iso);
         printf("  Microphone:  %s\n", in->mic ? "yes" : (in->state == LINK_CAMERA_OK ? "not found" : "-"));
+        printf("  Details:     %u bytes (X to show)\n", (unsigned)in->desc_len);
         printf("  Answered:    %u commands\n", (unsigned)in->commands);
         printf("\n  Link speed:  %s\n", speed_line);
     }
@@ -141,13 +142,16 @@ static void show_details(int chan, const Info *in) {
     bool ok = true;
     for (int page = 0; page * LINK_PAGE_LEN < len; page++) {
         u8 cmd[2] = { LINK_CMD_DESC, (u8)page };
-        if (!link_xfer(chan, cmd, 2, desc + page * LINK_PAGE_LEN, LINK_PAGE_LEN)) { ok = false; break; }
+        bool got = false;
+        for (int tries = 0; tries < 5 && !got; tries++) got = link_xfer(chan, cmd, 2, desc + page * LINK_PAGE_LEN, LINK_PAGE_LEN);
+        if (!got) { ok = false; break; }
     }
     int top = 0;
     const int rows = 16;
     for (;;) {
         clear();
         printf("  Camera details  %04x:%04x, %d bytes%s\n\n", in->vid, in->pid, len, ok ? "" : " (read failed)");
+        if (len == 0) printf("  The adapter hasn't read the camera's details.\n  Try unplugging the camera and plugging it back in.\n");
         for (int r = 0; r < rows; r++) {
             int off = (top + r) * 16;
             if (off >= len) break;
@@ -204,6 +208,11 @@ int main(void) {
         for (int c = 0; c < 4; c++) if (c != chan) d |= PAD_ButtonsDown(c);
         if (d & PAD_BUTTON_START) exit(0);
         if ((d & PAD_BUTTON_A) && chan >= 0) { speed_test(chan, speed_line, sizeof(speed_line)); frame = 0; }
-        if ((d & PAD_BUTTON_X) && chan >= 0 && info.desc_len) { show_details(chan, &info); frame = 0; }
+        if ((d & PAD_BUTTON_X) && chan >= 0) {
+            clear();
+            printf("\n  Reading the camera details...\n");
+            show_details(chan, &info);
+            frame = 0;
+        }
     }
 }
