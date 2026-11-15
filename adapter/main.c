@@ -171,7 +171,21 @@ static joybus_port_t gc;
 static uint8_t gc_status[3] = { 0x09, 0x00, 0x03 };     /* a standard controller */
 /* nothing pressed, sticks centred */
 static uint8_t gc_origin[10] = { 0x00, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00, 0x00, 0x00, 0x00 };
-static uint8_t gc_report[8] = { 0x00, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00, 0x00 };
+/* "Nothing pressed, sticks centred", in each of the console's reading modes.
+ * The mode is the byte after a poll command, and it changes how bytes 4-7
+ * are packed (joybus-pio's gamecube_definitions.h): sending the mode 3
+ * layout to a program that reads in mode 1 or 2 turns the centred C-stick
+ * into one pushed hard left, and an idle R into one half pressed. */
+static uint8_t gc_report_mode[8][8] = {
+    { 0x00, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00, 0x00 },   /* 0: L,R and A,B as nibbles */
+    { 0x00, 0x80, 0x80, 0x80, 0x88, 0x00, 0x00, 0x00 },   /* 1: C-stick as nibbles */
+    { 0x00, 0x80, 0x80, 0x80, 0x88, 0x00, 0x00, 0x00 },   /* 2: C-stick and L,R as nibbles */
+    { 0x00, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00, 0x00 },   /* 3: the usual */
+    { 0x00, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00, 0x00 },   /* 4: A,B instead of L,R */
+    { 0x00, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00, 0x00 },   /* 5-7: as 0 */
+    { 0x00, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00, 0x00 },
+    { 0x00, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00, 0x00 },
+};
 
 static void __not_in_flash_func(reply)(uint8_t *data, uint len) {
     busy_wait_us(GC_REPLY_DELAY_US);
@@ -226,7 +240,7 @@ static void __not_in_flash_func(gc_main)(void) {
             reply(gc_origin, sizeof(gc_origin));
             break;
         case 0x40:                               /* poll */
-            if (joybus_receive_bytes(&gc, cmd + 1, 2, GC_TIMEOUT_US, true) == 2) reply(gc_report, sizeof(gc_report));
+            if (joybus_receive_bytes(&gc, cmd + 1, 2, GC_TIMEOUT_US, true) == 2) reply(gc_report_mode[cmd[1] & 7], 8);
             else { busy_wait_us(GC_RESET_WAIT_US); joybus_port_reset(&gc); }
             break;
         case 0x1D: {                             /* game id: listen, no reply */
