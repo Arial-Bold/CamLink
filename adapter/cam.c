@@ -25,6 +25,8 @@
 /* ------------------------------------------------------------ talking to the camera */
 
 static volatile uint8_t cam_addr;      /* USB address, 0 = not plugged in */
+volatile uint8_t cam_progress;          /* how far cam_start has got (for diagnosis) */
+static uint8_t started_level;          /* the test level it was started at, 0 = stopped */
 static volatile bool streaming;
 
 static uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
@@ -260,26 +262,33 @@ void cam_attach(uint8_t daddr) {
 void cam_detach(void) {
     if (streaming) iso_close();
     streaming = false;
+    started_level = 0;
+    cam_progress = 0;
     cam_addr = 0;
 }
 
 bool cam_streaming(void) { return streaming; }
+bool cam_started(void) { return started_level != 0; }
 
-bool cam_start(uint8_t *fail_step) {
+bool cam_start(int level, uint8_t *fail_step) {
     *fail_step = 0;
+    cam_progress = 1;
     if (!cam_addr) { *fail_step = 1; return false; }
-    if (streaming) return true;
+    if (streaming || started_level) return true;
     usb_ok = true;
     /* the driver's sd_init (the sensor is known, so no probing) */
     reg_w(0x02, 0x0010);
     reg_r(0x0010);
     reg_w(0x01, 0x0000);
     if (!usb_ok) { *fail_step = 2; return false; }
+    cam_progress = 2;
     /* the biggest packets (alternate setting 7: 1023 bytes) */
-    if (!set_alt(7)) { *fail_step = 3; return false; }
+    if (level >= 2 && !set_alt(7)) { *fail_step = 3; return false; }
+    cam_progress = 3;
     /* the driver's sd_start for the MC501CB at 320x232 */
     exchange(mc501cb_InitialScale);
     if (!usb_ok) { *fail_step = 4; return false; }
+    cam_progress = 4;
     reg_w(0x08, 0x01c6);                    /* sharpness 2 */
     reg_r(0x01c8);
     reg_r(0x01c9);
@@ -291,18 +300,24 @@ bool cam_start(uint8_t *fail_step) {
     exchange(mc501cb_60HZScale);            /* 60 Hz lights (North America) */
     reg_w(0x42, 0x0180);                    /* automatic exposure */
     if (!usb_ok) { *fail_step = 5; return false; }
+    cam_progress = 5;
+    started_level = (uint8_t)level;
+    if (level < 3) return true;           /* (test levels: no receiving) */
     /* and receive */
     filling = false;
     ready_valid = false;
     streaming = true;
     iso_open(cam_addr);
+    cam_progress = 6;
     return true;
 }
 
 void cam_stop(void) {
-    if (!streaming) return;
+    if (!streaming && !started_level) return;
+    if (streaming) iso_close();
     streaming = false;
-    iso_close();
+    started_level = 0;
+    cam_progress = 0;
     usb_ok = true;
     set_alt(0);
     reg_w(0x01, 0x0000);                    /* the driver's stop: this also turns the light off */

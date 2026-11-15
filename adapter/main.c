@@ -26,6 +26,7 @@
 #include <string.h>
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
+#include "hardware/structs/vreg_and_chip_reset.h"
 #include "hardware/pio.h"
 #include "tusb.h"
 #include "ws2812.pio.h"
@@ -48,6 +49,9 @@ static volatile uint8_t cam_daddr;
 
 /* Asked by the GameCube (core 1), done by core 0. */
 static volatile bool want_start, want_stop;
+static volatile uint8_t want_level = 3;
+static volatile uint16_t unplugs;
+static uint32_t reset_reason;
 static volatile uint32_t last_frame_ask;
 
 /* ------------------------------------------------------------ the LED */
@@ -148,7 +152,7 @@ void tuh_mount_cb(uint8_t daddr) {
 }
 
 void tuh_umount_cb(uint8_t daddr) {
-    if (daddr == cam_daddr) { cam_detach(); cam_daddr = 0; }
+    if (daddr == cam_daddr) { cam_detach(); cam_daddr = 0; unplugs++; }
     state = LINK_WAITING;
     has_mic = 0;
     max_iso = 0;
@@ -194,6 +198,11 @@ static void __not_in_flash_func(make_info)(uint8_t *b) {
     put32(b + 20, cam_packets());
     put32(b + 24, cam_frames());
     put32(b + 28, cam_dropped());
+    put32(b + 32, to_ms_since_boot(get_absolute_time()));
+    b[36] = cam_progress;
+    b[37] = cam_started() ? want_level : 0;
+    b[38] = unplugs & 255; b[39] = unplugs >> 8;
+    put32(b + 40, reset_reason);
 }
 
 static CamFrame sending;   /* the frame the GameCube is reading */
@@ -266,8 +275,17 @@ static void __not_in_flash_func(gc_main)(void) {
             reply(out, LINK_CHUNK_LEN);
             break;
         }
+        case LINK_CMD_START_LEVEL:
+            if (joybus_receive_bytes(&gc, cmd + 1, 1, GC_TIMEOUT_US, true) != 1) break;
+            last_frame_ask = time_us_32();
+            want_level = cmd[1] >= 1 && cmd[1] <= 3 ? cmd[1] : 3;
+            want_start = true;
+            out[0] = state;
+            reply(out, 1);
+            break;
         case LINK_CMD_START:
             last_frame_ask = time_us_32();
+            want_level = 3;
             want_start = true;
             out[0] = state;
             reply(out, 1);
@@ -288,6 +306,7 @@ static void __not_in_flash_func(gc_main)(void) {
 /* ------------------------------------------------------------ main (core 0) */
 
 int main(void) {
+    reset_reason = vreg_and_chip_reset_hw->chip_reset;
     uint offset = pio_add_program(led_pio, &ws2812_program);
     led_sm = pio_claim_unused_sm(led_pio, true);
     ws2812_program_init(led_pio, led_sm, offset, LED_PIN, 800000);
@@ -309,16 +328,16 @@ int main(void) {
         }
         if (want_start) {
             want_start = false;
-            if (cam_daddr && !cam_streaming()) {
+            if (cam_daddr && !cam_streaming() && !cam_started()) {
                 state = LINK_STARTING;
                 show_state(now);
                 uint8_t step = 0;
-                if (cam_start(&step)) state = LINK_STREAMING;
+                if (cam_start(want_level, &step)) state = LINK_STREAMING;
                 else { fail_step = step; state = cam_daddr ? LINK_START_FAILED : LINK_WAITING; }
             }
         }
         /* nobody watching: switch the camera (and its light) off */
-        if (cam_streaming() && time_us_32() - last_frame_ask > IDLE_STOP_US) {
+        if (cam_started() && want_level == 3 && time_us_32() - last_frame_ask > IDLE_STOP_US) {
             cam_stop();
             if (cam_daddr) state = LINK_CAMERA_OK;
         }

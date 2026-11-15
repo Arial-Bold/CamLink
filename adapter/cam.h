@@ -22,8 +22,12 @@ void cam_attach(uint8_t daddr);
 void cam_detach(void);
 /* (core 0) Starts or stops the video (the camera's light follows). Starting
  * takes a second or two of settings. Returns false if the camera didn't take
- * them; *fail_step says where. */
-bool cam_start(uint8_t *fail_step);
+ * them; *fail_step says where. level 3 is the real thing; 1 (settings only)
+ * and 2 (settings and the big-packet setting, nothing received) are for
+ * finding out which part goes wrong. */
+bool cam_start(int level, uint8_t *fail_step);
+bool cam_started(void);
+extern volatile uint8_t cam_progress;
 void cam_stop(void);
 bool cam_streaming(void);
 /* (core 0) Now and then while streaming: eases the camera's data rate back if
