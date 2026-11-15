@@ -251,6 +251,7 @@ int main(void) {
     }
     /* (the console's own controller polling only gets in the way on that port) */
     SI_DisablePolling(SI_CHAN_BIT(chan));
+    clear_screen();
 
     bool want_on = true;
     u8 cmd[3];
@@ -284,9 +285,19 @@ int main(void) {
         /* the adapter's counts, twice a second */
         if (diff_usec(last_info, gettime()) > 500000) {
             last_info = gettime();
-            if (read_info(chan, &info)) {
-                snprintf(stat_line, sizeof(stat_line), "%s%s  packets %u  frames %u  dropped %u",
-                         state_text(info.state), info.state == LINK_START_FAILED ? " (step " : "",
+            bool answered = read_info(chan, &info);
+            if (!answered) {
+                snprintf(stat_line, sizeof(stat_line), "adapter not answering");
+            } else if (info.version < LINK_VERSION) {
+                snprintf(stat_line, sizeof(stat_line), "adapter has firmware v%d: put the new camlink.uf2 on it", info.version);
+            } else {
+                /* (a start that got lost, or a camera plugged in later: ask again) */
+                if (want_on && info.state == LINK_CAMERA_OK) {
+                    cmd[0] = LINK_CMD_START;
+                    link_xfer_retry(chan, cmd, 1, r, 1);
+                }
+                snprintf(stat_line, sizeof(stat_line), "v%d  %s  packets %u  frames %u  dropped %u", info.version,
+                         state_text(info.state),
                          (unsigned)info.packets, (unsigned)info.frames, (unsigned)info.dropped);
                 if (info.state == LINK_START_FAILED) {
                     char tmp[96];
@@ -294,8 +305,6 @@ int main(void) {
                              (unsigned)info.packets);
                     strcpy(stat_line, tmp);
                 }
-            } else {
-                snprintf(stat_line, sizeof(stat_line), "adapter not answering");
             }
         }
 
