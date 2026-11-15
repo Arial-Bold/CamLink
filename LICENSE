@@ -20,5 +20,10 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-The adapter firmware includes joybus-pio (adapter/joybus-pio), which is under
-the GNU LGPL 3.0; see adapter/joybus-pio/LICENSE.
+The above covers the GameCube programs (gamecube/) and shared/.
+
+The adapter firmware (adapter/) is under the GNU GPL, version 3 or later (see
+adapter/COPYING): its camera settings come from the Linux gspca zc3xx driver
+(GPL-2.0-or-later). It includes joybus-pio (adapter/joybus-pio), under the
+GNU LGPL 3.0 (see adapter/joybus-pio/LICENSE), and is built with TinyUSB and
+the Raspberry Pi Pico SDK (MIT and BSD-3-Clause).

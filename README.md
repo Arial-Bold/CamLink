@@ -38,11 +38,27 @@ the same way.
 | Yellow double blink | A different USB device |
 | Slow white blink | No USB device (or no power on the USB port) |
 
+## Step 2: the first live picture
+
+- `adapter/` - CamLink now starts the webcam when the GameCube asks (its light
+  comes on), receives its video, and keeps the newest whole picture ready.
+- `gamecube/camview/` - **camview**, which starts the camera and shows its
+  pictures full screen, with frames per second and the link's speed.
+
+Put the new `camlink.uf2` on the adapter, plug the webcam in, run
+`camview.dol` with a wired controller in another port. A turns the camera on
+and off; START restarts the GameCube.
+
+The board's LED shows cyan (blinking while the camera starts, steady while
+pictures come) and red if the camera didn't take its settings.
+
 ## Building
 
-GitHub builds both on every push (Actions tab): `camtest.dol` and
-`camlink.uf2`.
+GitHub builds everything on every push (Actions tab): `camtest.dol`,
+`camview.dol` and `camlink.uf2`.
 
 ## License
 
-MIT (see LICENSE). The adapter firmware uses joybus-pio, LGPL 3.0.
+The GameCube programs: MIT (see LICENSE). The adapter firmware: GPL 3.0 or
+later (adapter/COPYING), since its camera settings come from the Linux gspca
+zc3xx driver; it uses joybus-pio (LGPL 3.0) and TinyUSB.
