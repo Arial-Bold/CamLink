@@ -9,7 +9,7 @@
 #define LINK_MAGIC1 'A'
 #define LINK_MAGIC2 'M'
 #define LINK_MAGIC3 '1'
-#define LINK_VERSION 2
+#define LINK_VERSION 3
 
 /* 0xE0: hello. Reply: 32 bytes, the info block below. */
 #define LINK_CMD_HELLO 0xE0
@@ -29,8 +29,12 @@
  * the state. */
 #define LINK_CMD_START 0xE5
 #define LINK_CMD_STOP 0xE6
+/* 0xE7 n: start the camera at test level n: 1 = its settings only, 2 = the
+ * settings and its big-packet setting (nothing received), 3 = the same as
+ * 0xE5. Reply: 1 byte, the state. */
+#define LINK_CMD_START_LEVEL 0xE7
 
-#define LINK_INFO_LEN 32
+#define LINK_INFO_LEN 48
 #define LINK_PAGE_LEN 32
 #define LINK_SPEED_LEN 64
 #define LINK_CHUNK_LEN 128
@@ -61,7 +65,14 @@ enum {
  * 16      4   commands the adapter has answered
  * 20      4   video packets received from the camera
  * 24      4   whole frames received from the camera
- * 28      4   frames dropped (too big, or broken off) */
+ * 28      4   frames dropped (too big, or broken off)
+ * 32      4   time since the adapter started (ms): if this goes back to a
+ *             small number, the adapter restarted
+ * 36      1   how far starting the camera got (1..6)
+ * 37      1   the test level the camera was started at (0 = stopped)
+ * 38      2   times the camera was unplugged (or dropped off USB)
+ * 40      4   the chip's reset reasons at start-up (CHIP_RESET register)
+ * 44      4   (0) */
 
 /* The frame block (0xE4).
  * offset  size
